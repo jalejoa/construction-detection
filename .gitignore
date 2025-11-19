@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environments
+.env
+*.env
+
+# Data
+data/raw/*
+data/processed/*
+data/quads/*
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
