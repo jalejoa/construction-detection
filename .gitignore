@@ -18,14 +18,14 @@ data/raw/**
 data/processed/**
 data/quads/**
 data/models/**
-data/pretraining/
-data/raw/.gitkeep
+data/pretraining
+!data/raw/.gitkeep
 !data/pretraining/.gitkeep
-data/processed/.gitkeep
-data/quads/.gitkeep
-data/models/.gitkeep
-data/models/building_pretrain/.gitkeep
-data/models/construction_ft/.gitkeep
+!data/processed/.gitkeep
+!data/quads/.gitkeep
+!data/models/.gitkeep
+!data/models/building_pretrain/.gitkeep
+!data/models/construction_ft/.gitkeep
 
 # OS / Editor files
 .DS_Store
