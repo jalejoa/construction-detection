@@ -13,8 +13,10 @@ __pycache__/
 *.env
 
 # Data
+data/models_old
 data/raw/*
 data/processed/*
+data/pretraining/*
 data/quads/*
 data/models/*
 !data/models/.gitkeep
