@@ -1,13 +1,11 @@
 import pandas as pd
-import os
-import time
 import geopandas as gpd
 from shapely.geometry import box
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-BASEMAPS_API_URL = "https://api.planet.com/basemaps/v1"
+from config import BASEMAPS_API_URL
 
 
 def paginated_get(session, url, item_key, **kwargs):
@@ -87,7 +85,7 @@ def get_mosaics_for_aoi(
 def expand_points_by_month(
     points_gdf: gpd.GeoDataFrame,
     mosaics_df: pd.DataFrame,
-    id_col: str = "fid_1",
+    id_col: str = "order",
     date_start_col: str = "Start",
     date_end_col: str = "End",
     ongoing_col: str = "Ongoing",
@@ -207,7 +205,7 @@ def assign_quads_to_points(
     """
     Spatially match points to quads using mosaic_id groups.
     Returns a clean GeoDataFrame with:
-    fid_1, Start, End, Ongoing, year_month, mosaic_id, quad_id, geometry.
+    order, Start, End, Ongoing, year_month, mosaic_id, quad_id, geometry.
     """
     results = []
 
@@ -250,12 +248,12 @@ def assign_quads_to_points(
     return gpd.GeoDataFrame(out, geometry="geometry", crs=points_by_month.crs)
 
 def extract_quads_to_download(point_quad: pd.DataFrame) -> pd.DataFrame:
-    df = point_quad[["mosaic_id", "quad_id"]].drop_duplicates().reset_index(drop=True)
+    df = point_quad[["mosaic_id", "quad_id","year_month"]].drop_duplicates().reset_index(drop=True)
     return df
 
 def build_quad_index(point_quad: pd.DataFrame) -> pd.DataFrame:
     out = (
-        point_quad.groupby(["mosaic_id", "quad_id"])["order"]
+        point_quad.groupby(["mosaic_id", "quad_id","year_month"])["order"]
         .agg(n_sites="nunique", sites=lambda x: sorted(set(x)))
         .reset_index()
     )

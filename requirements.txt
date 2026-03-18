@@ -1,0 +1,22 @@
+# Core geospatial
+geopandas
+shapely
+rasterio
+
+# Data
+pandas
+numpy
+
+# Planet API
+requests
+urllib3
+
+# ML
+# torch: install separately from https://pytorch.org matching your CUDA version
+tqdm
+
+# Visualization
+matplotlib
+
+# Config
+python-dotenv

@@ -9,12 +9,15 @@ __pycache__/
 
 # Environments
 .env
+.venv/
 *.env
 
 # Data
 data/raw/*
 data/processed/*
 data/quads/*
+data/models/*
+!data/models/.gitkeep
 
 # OS / Editor files
 .DS_Store

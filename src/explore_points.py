@@ -33,7 +33,7 @@ def save_aoi_gpkg(gdf, out_gpkg_path):
     crs="EPSG:4326"
     )
     bbox_gdf.to_file(out_gpkg_path, layer="aoi_bbox", driver="GPKG")
-    print (f"Saved AOI points to {out_gpkg_path}")
+    print (f"Saved AOI to {out_gpkg_path}")
 
 
 def save_metadata_json(min_date, max_date, bbox, out_json_path):
