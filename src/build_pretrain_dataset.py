@@ -4,7 +4,7 @@ build_pretrain_dataset.py
 Full pipeline to prepare the pretraining dataset for the U-Net building detector.
 
 Pipeline stages:
-  1. build_mosaic   — Reprojects and mosaics Planet quads into one GeoTIFF + grid JSON
+  1. build_vrt      — Assembles Planet quads into a GDAL VRT (no physical mosaic written)
   2. rasterize_mask — Burns building footprints (GPKG) into a binary mask aligned to the grid
   3. tile_dataset   — Sliding-window tiling (default 512×512), keeps tiles with ≥ pos_min positives
   4. make_splits    — Random 70/15/15 train/val/test split by tile ID
@@ -16,7 +16,7 @@ Expected input layout (defaults):
 
 Output layout:
     data/pretraining/
-        mosaic.tif
+        mosaic.vrt
         mosaic.grid.json
         building_mask.tif
         tiles/
@@ -30,7 +30,7 @@ Output layout:
 Usage (CLI):
     cd src
     python build_pretrain_dataset.py
-    python build_pretrain_dataset.py --quads_dir ../data/raw/planet_quads --epsg 25832
+    python build_pretrain_dataset.py --quads_dir ../data/raw/planet_quads
 
 Usage (Python):
     from build_pretrain_dataset import run_pipeline
@@ -40,75 +40,81 @@ Usage (Python):
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import random
+import subprocess
 from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
 import geopandas as gpd
 import rasterio
-from rasterio.enums import Resampling
 from rasterio.features import rasterize
-from rasterio.transform import Affine, from_origin
-from rasterio.warp import reproject, transform_bounds
+from rasterio.transform import Affine
+from rasterio.warp import transform_bounds
 from rasterio.windows import Window
 
 from config import DATA_RAW, DATA_DIR
 
 
 # ---------------------------------------------------------------------------
-# Stage 1 — Mosaic
+# Stage 1 — VRT
 # ---------------------------------------------------------------------------
 
-def build_mosaic(
+def build_vrt(
     quads_dir: Path,
-    out_tif: Path,
+    out_vrt: Path,
     out_grid_json: Path,
     *,
-    epsg: int = 25832,
-    res: float = 3.0,
-    bands: List[int],
+    epsg: Optional[int] = None,
+    res: Optional[float] = None,
 ) -> dict:
     """
-    Reprojects and mosaics all .tif quads in quads_dir into a single GeoTIFF.
-    Also saves a grid JSON used by subsequent stages.
+    Assembles Planet quads into a GDAL VRT (no physical mosaic written).
+    Uses osgeo.gdal.BuildVRT with fallback to gdalbuildvrt CLI.
+    Returns grid dict compatible with rasterize_mask() and tile_dataset().
 
     Parameters
     ----------
     quads_dir : Path
         Directory containing Planet .tif quad files.
-    out_tif : Path
-        Output mosaic GeoTIFF path.
+    out_vrt : Path
+        Output VRT path.
     out_grid_json : Path
         Output grid JSON path.
-    epsg : int
-        Target CRS as EPSG code.
-    res : float
-        Target pixel resolution in metres.
-    bands : list[int]
-        1-based band indices to include (e.g. [1,2,3,4,5,6,7,8] skips alpha).
+    epsg : int | None
+        Target CRS as EPSG code. None = use native quad CRS.
+    res : float | None
+        Target pixel resolution in metres. None = use native quad resolution.
 
     Returns
     -------
     dict
-        Grid dictionary (epsg, transform, width, height, bounds, res).
+        Grid dictionary (epsg, transform, width, height, bounds, res,
+        template_raster).
     """
     paths = sorted(quads_dir.glob("*.tif"))
     if not paths:
         raise FileNotFoundError(f"No .tif files found in: {quads_dir}")
 
-    print(f"[mosaic] Found {len(paths)} quads in {quads_dir}")
-    band_idx = [b - 1 for b in bands]  # 0-based
+    print(f"[vrt] Found {len(paths)} quads in {quads_dir}")
 
-    dst_crs = rasterio.crs.CRS.from_epsg(epsg)
+    # Read native CRS and resolution from the first quad
+    with rasterio.open(paths[0]) as ref:
+        native_crs = ref.crs
+        native_res = ref.res[0]  # assume square pixels
 
-    # Compute global bounds in target CRS
+    target_epsg = epsg if epsg is not None else int(native_crs.to_epsg())
+    target_res  = res  if res  is not None else native_res
+    dst_crs = rasterio.crs.CRS.from_epsg(target_epsg)
+
+    # Compute unified bounds across all quads in target CRS
     all_bounds = []
     for p in paths:
         with rasterio.open(p) as src:
-            left, bottom, right, top = transform_bounds(src.crs, dst_crs, *src.bounds, densify_pts=21)
+            left, bottom, right, top = transform_bounds(
+                src.crs, dst_crs, *src.bounds, densify_pts=21
+            )
             all_bounds.append((left, bottom, right, top))
 
     g_left   = min(b[0] for b in all_bounds)
@@ -116,69 +122,81 @@ def build_mosaic(
     g_right  = max(b[2] for b in all_bounds)
     g_top    = max(b[3] for b in all_bounds)
 
-    width  = int(np.ceil((g_right  - g_left)   / res))
-    height = int(np.ceil((g_top    - g_bottom)  / res))
-    transform = from_origin(g_left, g_top, res, res)
+    out_vrt.parent.mkdir(parents=True, exist_ok=True)
+    file_list = [str(p) for p in paths]
 
-    n_bands = len(band_idx)
-    with rasterio.open(paths[0]) as ref:
-        dtype = ref.dtypes[0]
+    # Build VRT — try Python binding first, fall back to CLI
+    _build_vrt_gdal(file_list, out_vrt, target_epsg, target_res)
 
-    dest = np.zeros((n_bands, height, width), dtype=dtype)
-
-    for p in paths:
-        with rasterio.open(p) as src:
-            tmp = np.zeros((n_bands, height, width), dtype=dtype)
-            for out_b, src_b in enumerate(band_idx):
-                reproject(
-                    source=rasterio.band(src, src_b + 1),
-                    destination=tmp[out_b],
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    src_nodata=0,
-                    dst_transform=transform,
-                    dst_crs=dst_crs,
-                    dst_nodata=0,
-                    resampling=Resampling.bilinear,
-                )
-            mask = tmp != 0
-            dest = np.where(mask, tmp, dest)
-
-    profile = {
-        "driver": "GTiff",
-        "height": height,
-        "width": width,
-        "count": n_bands,
-        "dtype": dtype,
-        "crs": dst_crs,
-        "transform": transform,
-        "nodata": 0,
-        "tiled": True,
-        "blockxsize": 512,
-        "blockysize": 512,
-        "compress": "DEFLATE",
-        "predictor": 2,
-    }
-
-    out_tif.parent.mkdir(parents=True, exist_ok=True)
-    with rasterio.open(out_tif, "w", **profile) as dst:
-        dst.write(dest)
+    # Read back the VRT to get authoritative grid metadata
+    with rasterio.open(out_vrt) as vrt:
+        vrt_tr = vrt.transform
+        vrt_w  = vrt.width
+        vrt_h  = vrt.height
 
     grid = {
-        "epsg": epsg,
-        "transform": list(transform),
-        "width": width,
-        "height": height,
+        "epsg": target_epsg,
+        "transform": list(vrt_tr),
+        "width": vrt_w,
+        "height": vrt_h,
         "bounds": [g_left, g_bottom, g_right, g_top],
-        "res": res,
-        "template_raster": str(out_tif),
+        "res": target_res,
+        "template_raster": str(out_vrt),
     }
     out_grid_json.parent.mkdir(parents=True, exist_ok=True)
     out_grid_json.write_text(json.dumps(grid, indent=2), encoding="utf-8")
 
-    print(f"[mosaic] Written: {out_tif}  ({width}×{height} px, {n_bands} bands)")
-    print(f"[mosaic] Grid JSON: {out_grid_json}")
+    print(f"[vrt] Written: {out_vrt}  ({vrt_w}×{vrt_h} px)")
+    print(f"[vrt] Grid JSON: {out_grid_json}")
     return grid
+
+
+def _build_vrt_gdal(
+    file_list: list[str],
+    out_vrt: Path,
+    epsg: int,
+    res: float,
+) -> None:
+    """Try osgeo.gdal.BuildVRT; fall back to gdalbuildvrt CLI."""
+    srs = f"EPSG:{epsg}"
+    try:
+        from osgeo import gdal  # type: ignore
+        opts = gdal.BuildVRTOptions(
+            outputSRS=srs,
+            xRes=res,
+            yRes=res,
+            separate=False,
+        )
+        ds = gdal.BuildVRT(str(out_vrt), file_list, options=opts)
+        if ds is None:
+            raise RuntimeError("gdal.BuildVRT returned None")
+        ds.FlushCache()
+        ds = None
+        print("[vrt] Built via osgeo.gdal.BuildVRT")
+    except ImportError:
+        _build_vrt_cli(file_list, out_vrt, srs, res)
+
+
+def _build_vrt_cli(
+    file_list: list[str],
+    out_vrt: Path,
+    srs: str,
+    res: float,
+) -> None:
+    """Fallback: call gdalbuildvrt as a subprocess."""
+    cmd = [
+        "gdalbuildvrt",
+        "-a_srs", srs,
+        "-tr", str(res), str(res),
+        str(out_vrt),
+        *file_list,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gdalbuildvrt failed (rc={result.returncode}):\n{result.stderr}"
+        )
+    print("[vrt] Built via gdalbuildvrt CLI")
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +218,7 @@ def rasterize_mask(
     footprints_path : Path
         Vector file with building polygons (GPKG, SHP, GeoJSON).
     grid : dict
-        Grid dictionary as returned by build_mosaic.
+        Grid dictionary as returned by build_vrt.
     out_mask : Path
         Output mask GeoTIFF path.
     layer : str | None
@@ -287,10 +305,16 @@ def tile_dataset(
     stride: int = 512,
     pos_min: float = 0.01,
     id_prefix: str = "tile",
+    bands: Optional[List[int]] = None,
 ) -> List[str]:
     """
-    Slides a window over the mosaic+mask pair and writes tiles to disk.
+    Slides a window over the VRT+mask pair and writes tiles to disk.
     Only tiles with >= pos_min fraction of positive pixels are kept.
+
+    Parameters
+    ----------
+    bands : list[int] | None
+        1-based band indices to read from the VRT. None = all bands.
 
     Returns
     -------
@@ -309,6 +333,8 @@ def tile_dataset(
         if si.crs != sm.crs:
             raise ValueError("Image and mask CRS do not match.")
 
+        indexes = bands if bands is not None else None
+        n_bands = len(bands) if bands is not None else si.count
         img_dtype = si.dtypes[0]
 
         for win in _iter_windows(si.width, si.height, tile_size, stride):
@@ -319,7 +345,7 @@ def tile_dataset(
             if float(m_bin.sum()) / (tile_size * tile_size) < pos_min:
                 continue
 
-            I = si.read(window=win)
+            I = si.read(window=win, indexes=indexes)
 
             top  = int(win.row_off)
             left = int(win.col_off)
@@ -331,7 +357,7 @@ def tile_dataset(
                 "driver": "GTiff",
                 "height": tile_size,
                 "width":  tile_size,
-                "count":  si.count,
+                "count":  n_bands,
                 "dtype":  img_dtype,
                 "crs":    si.crs,
                 "transform": tr_img,
@@ -467,8 +493,8 @@ def run_pipeline(
     footprints_path: Path,
     out_dir: Path,
     *,
-    epsg: int = 25832,
-    res: float = 3.0,
+    epsg: Optional[int] = None,
+    res: Optional[float] = None,
     bands: List[int] = None,
     tile_size: int = 512,
     stride: int = 512,
@@ -488,14 +514,13 @@ def run_pipeline(
     splits_dir = tiles_dir / "splits"
     stats_dir  = out_dir / "stats"
 
-    # 1. Mosaic
-    grid = build_mosaic(
+    # 1. VRT
+    grid = build_vrt(
         quads_dir=quads_dir,
-        out_tif=out_dir / "mosaic.tif",
+        out_vrt=out_dir / "mosaic.vrt",
         out_grid_json=out_dir / "mosaic.grid.json",
         epsg=epsg,
         res=res,
-        bands=bands,
     )
 
     # 2. Rasterize mask
@@ -507,7 +532,7 @@ def run_pipeline(
 
     # 3. Tile
     tile_ids = tile_dataset(
-        img_path=out_dir / "mosaic.tif",
+        img_path=out_dir / "mosaic.vrt",
         msk_path=out_dir / "building_mask.tif",
         out_images_dir=images_dir,
         out_masks_dir=masks_dir,
@@ -515,6 +540,7 @@ def run_pipeline(
         stride=stride,
         pos_min=pos_min,
         id_prefix=id_prefix,
+        bands=bands,
     )
 
     # 4. Splits
@@ -562,10 +588,25 @@ def _parse_args() -> argparse.Namespace:
         default=DATA_DIR / "pretraining",
         help="Output root directory (default: data/pretraining/)",
     )
-    ap.add_argument("--epsg",      type=int,   default=25832)
-    ap.add_argument("--res",       type=float, default=3.0,   help="Pixel resolution in metres")
-    ap.add_argument("--bands",     type=int,   nargs="+",     default=list(range(1, 9)),
-                    help="1-based band indices to use (default: 1 2 3 4 5 6 7 8)")
+    ap.add_argument(
+        "--epsg",
+        type=int,
+        default=None,
+        help="Target CRS as EPSG code (default: None = use native quad CRS)",
+    )
+    ap.add_argument(
+        "--res",
+        type=float,
+        default=None,
+        help="Pixel resolution in metres (default: None = use native quad resolution)",
+    )
+    ap.add_argument(
+        "--bands",
+        type=int,
+        nargs="+",
+        default=list(range(1, 9)),
+        help="1-based band indices to use (default: 1 2 3 4 5 6 7 8)",
+    )
     ap.add_argument("--tile_size", type=int,   default=512)
     ap.add_argument("--stride",    type=int,   default=512)
     ap.add_argument("--pos_min",   type=float, default=0.01,

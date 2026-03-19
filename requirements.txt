@@ -2,6 +2,7 @@
 geopandas
 shapely
 rasterio
+gdal  # Python bindings for GDAL (BuildVRT); falls back to gdalbuildvrt CLI if not importable
 
 # Data
 pandas
