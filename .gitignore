@@ -12,20 +12,28 @@ __pycache__/
 .venv/
 *.env
 
-# Data
-data/models_old
-data/raw/**
-data/processed/**
-data/quads/**
-data/models/**
-data/pretraining/
-data/raw/.gitkeep
+# Data — ignore all content but keep folder structure via .gitkeep
+data/models_old/
+data/models/
+data/raw/*
+data/processed/*
+data/quads/*
+data/pretraining/mosaic.*
+data/pretraining/building_mask.tif
+data/pretraining/tiles/images/*
+data/pretraining/tiles/masks/*
+data/pretraining/tiles/splits/*
+data/pretraining/stats/*
+
+# Allow .gitkeep placeholders
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/quads/.gitkeep
 !data/pretraining/.gitkeep
-data/processed/.gitkeep
-data/quads/.gitkeep
-data/models/.gitkeep
-data/models/building_pretrain/.gitkeep
-data/models/construction_ft/.gitkeep
+!data/pretraining/tiles/images/.gitkeep
+!data/pretraining/tiles/masks/.gitkeep
+!data/pretraining/tiles/splits/.gitkeep
+!data/pretraining/stats/.gitkeep
 
 # OS / Editor files
 .DS_Store
