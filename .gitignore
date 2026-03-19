@@ -14,7 +14,7 @@ __pycache__/
 
 # Data — ignore all content but keep folder structure via .gitkeep
 data/models_old/
-data/models/
+data/models/*
 data/raw/*
 data/processed/*
 data/quads/*
@@ -26,6 +26,7 @@ data/pretraining/tiles/splits/*
 data/pretraining/stats/*
 
 # Allow .gitkeep placeholders
+!data/models/.gitkeep
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/quads/.gitkeep
