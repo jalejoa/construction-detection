@@ -19,6 +19,11 @@ data/raw/*
 data/processed/shp/*
 data/processed/gpkg/*
 data/processed/cropped_images/*
+data/processed/mosaics_ref.csv
+data/processed/quad_catalog.csv
+data/processed/site_splits.csv
+data/processed/logs/
+data/processed/norm/
 data/quads/*
 data/pretraining/mosaic.*
 data/pretraining/building_mask.tif
