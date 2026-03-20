@@ -16,7 +16,9 @@ __pycache__/
 data/models_old/
 data/models/*
 data/raw/*
-data/processed/*
+data/processed/shp/*
+data/processed/gpkg/*
+data/processed/cropped_images/*
 data/quads/*
 data/pretraining/mosaic.*
 data/pretraining/building_mask.tif
@@ -29,6 +31,11 @@ data/pretraining/stats/*
 !data/models/.gitkeep
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/processed/shp/.gitkeep
+!data/processed/gpkg/.gitkeep
+!data/processed/cropped_images/.gitkeep
+!data/processed/cropped_images/README_flagged_macro.md
+data/processed/cropped_images/flagged_macro.csv
 !data/quads/.gitkeep
 !data/pretraining/.gitkeep
 !data/pretraining/tiles/images/.gitkeep
