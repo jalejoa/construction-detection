@@ -34,6 +34,19 @@ def get_mosaics_for_aoi(
     Fetch Planet mosaics, filter by prefix and time overlap,
     and return a reference table with:
     mosaic_id, name, time_start, time_end, year_month.
+
+    Args:
+        name_prefix: Filters mosaics to a specific Planet product by matching
+            the start of the mosaic name. This determines which dataset is
+            downloaded throughout the pipeline. Must match your Planet
+            subscription tier. Example values:
+              - "ps_monthly_sen2_normalized_analytic_8b_sr_subscription"
+                → 8-band SR monthly mosaics (required by this project's U-Net)
+              - "ps_monthly_analytic_msrgb_subscription"
+                → 3-band RGB monthly mosaics (incompatible with 8-band model)
+            Use a prefix that is long enough to uniquely identify the product
+            (e.g. "ps_monthly" matches multiple tiers; be more specific if
+            your account has access to more than one monthly product).
     """
     session = requests.Session()
     session.auth = (api_key, '')
