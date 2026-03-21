@@ -656,6 +656,14 @@ def filter_macro_catalog(
     macro = pd.read_csv(macro_catalog_csv)
     flagged = pd.read_csv(flagged_csv)
 
+    if flagged.empty:
+        print("[filter_macro_catalog] flagged_macro.csv is empty — no patches excluded.")
+        if out_csv is not None:
+            out_csv = Path(out_csv)
+            out_csv.parent.mkdir(parents=True, exist_ok=True)
+            macro.to_csv(out_csv, index=False)
+        return macro
+
     # Keep only required columns
     flagged = flagged[["order", "year_month"]].copy()
 
