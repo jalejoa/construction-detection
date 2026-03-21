@@ -455,3 +455,210 @@ def select_good_bad_ugly(df, *, k=6, unique_by="order"):
     ugly = _pick_unique(ugly)
 
     return good, bad, ugly
+
+
+# ---------------------------------------------------------------------------
+# Funciones migradas desde notebook 04_finetuning
+# ---------------------------------------------------------------------------
+
+def make_rgb_like(img8):
+    """(8,H,W) torch tensor → (H,W,3) numpy RGB normalizado [0-1]. Bandas 5,3,1."""
+    x = img8[[5, 3, 1], :, :].float()
+    x = x - x.min()
+    x = x / (x.max() + 1e-8)
+    return x.permute(1, 2, 0).detach().cpu().numpy()
+
+
+@torch.no_grad()
+def show_prediction_with_meta(trainer, batch, thr=0.5, idx_in_batch=0):
+    """4-panel (RGB / GT / Prob / Pred) para un sample de un batch ya cargado."""
+    trainer.model.eval()
+
+    img, msk, meta = batch
+    img = img.to(trainer.device)
+    msk = msk.to(trainer.device)
+
+    with torch.no_grad():
+        probs = torch.sigmoid(trainer.model(img))
+        pred = (probs >= thr).float()
+
+    i = idx_in_batch
+    order_i = int(meta["order"][i].item())
+    ym_i = meta["year_month"][i]
+
+    x = img[i].cpu().numpy()
+    y_gt = msk[i, 0].cpu().numpy()
+    y_pr = pred[i, 0].cpu().numpy()
+    y_pb = probs[i, 0].cpu().numpy()
+
+    R, G, B = 5, 3, 1
+    rgb = x[[R, G, B]].transpose(1, 2, 0)
+    rgb = rgb / max(rgb.max(), 1e-6)
+    rgb = np.clip(rgb, 0, 1)
+
+    fig, axes = plt.subplots(1, 4, figsize=(18, 5))
+    axes[0].imshow(rgb); axes[0].set_title(f"RGB\norder={order_i}\n{ym_i}"); axes[0].axis("off")
+    axes[1].imshow(y_gt, cmap="gray"); axes[1].set_title("GT"); axes[1].axis("off")
+    axes[2].imshow(y_pb, cmap="viridis"); axes[2].set_title("Prob"); axes[2].axis("off")
+    axes[3].imshow(y_pr, cmap="gray"); axes[3].set_title(f"Pred thr={thr:.2f}"); axes[3].axis("off")
+    plt.tight_layout(); plt.show()
+
+
+@torch.no_grad()
+def scan_split_table_batched(trainer, thr=0.7, max_batches=None):
+    """
+    Versión en batch de scan_split_table(): más rápida, usa AMP.
+    Devuelve DataFrame con columnas: order, year_month, tp, fp, fn,
+    iou, f1, precision, recall, gt_px, pred_px.
+    """
+    trainer.model.eval()
+    dl = trainer.dl_va
+
+    rows = []
+    device = trainer.device
+    use_amp = (trainer.device_type == "cuda")
+
+    for bi, batch in enumerate(dl):
+        if max_batches is not None and bi >= max_batches:
+            break
+
+        img, msk = batch[0], batch[1]
+        meta = batch[2] if len(batch) > 2 and isinstance(batch[2], dict) else None
+        if meta is None:
+            raise ValueError("No encontré meta dict en el batch. Ajusta el índice (batch[2]).")
+
+        img = img.to(device, non_blocking=True)
+        msk = msk.to(device, non_blocking=True)
+
+        with torch.amp.autocast(device_type=trainer.device_type, enabled=use_amp):
+            logits = trainer.model(img)
+
+        probs = torch.sigmoid(logits)
+        pred = (probs >= thr).to(torch.int32)
+        gt   = (msk >= 0.5).to(torch.int32)
+
+        dims = (2, 3)
+        TP = (pred & gt).sum(dim=dims).cpu().numpy()
+        FP = (pred & (1 - gt)).sum(dim=dims).cpu().numpy()
+        FN = ((1 - pred) & gt).sum(dim=dims).cpu().numpy()
+
+        inter = TP.astype(np.float64)
+        union = (pred.sum(dim=dims).cpu().numpy() + gt.sum(dim=dims).cpu().numpy() - TP).astype(np.float64)
+
+        eps = 1e-8
+        iou = (inter + eps) / (union + eps)
+        f1  = (2*inter + eps) / (2*inter + FP + FN + eps)
+        precision = (inter + eps) / (inter + FP + eps)
+        recall    = (inter + eps) / (inter + FN + eps)
+
+        gt_px   = gt.sum(dim=dims).cpu().numpy()
+        pred_px = pred.sum(dim=dims).cpu().numpy()
+
+        orders = meta["order"].detach().cpu().numpy()
+        yms    = meta["year_month"]
+
+        for i in range(len(orders)):
+            rows.append({
+                "order": int(orders[i]),
+                "year_month": str(yms[i]),
+                "tp": int(TP[i].item()),
+                "fp": int(FP[i].item()),
+                "fn": int(FN[i].item()),
+                "iou": float(iou[i].item()),
+                "f1": float(f1[i].item()),
+                "precision": float(precision[i].item()),
+                "recall": float(recall[i].item()),
+                "gt_px": int(gt_px[i].item()),
+                "pred_px": int(pred_px[i].item()),
+            })
+
+    return pd.DataFrame(rows)
+
+
+def pick_sets(df, *, n=6):
+    """
+    Estratifica un DataFrame de comparación dual-modelo (columnas _A/_B, d_iou)
+    en 5 tiers: good, bad, ugly, A_wins, B_wins.
+    Complementa select_good_bad_ugly() (single-model).
+    """
+    p50_lo = df["iou_A"].quantile(0.45)
+    p50_hi = df["iou_A"].quantile(0.55)
+
+    df_nonempty = df[df["gt_px_A"] > 0].copy()
+    df_nonempty["iou_best"] = df_nonempty[["iou_A", "iou_B"]].max(axis=1)
+
+    good = df_nonempty.sort_values("iou_best", ascending=False).head(n)
+
+    mid = df_nonempty[
+        (df_nonempty["iou_best"] >= p50_lo) & (df_nonempty["iou_best"] <= p50_hi)
+    ].copy()
+    mid["err"] = mid["fp_A"] + mid["fn_A"] + mid["fp_B"] + mid["fn_B"]
+    bad = mid.sort_values("err", ascending=False).head(n)
+
+    ugly = df_nonempty.sort_values("iou_best", ascending=True).head(n)
+
+    winA = df_nonempty.sort_values("d_iou", ascending=False).head(n)
+    winB = df_nonempty.sort_values("d_iou", ascending=True).head(n)
+
+    return {"good": good, "bad": bad, "ugly": ugly, "A_wins": winA, "B_wins": winB}
+
+
+@torch.no_grad()
+def find_sample_in_val(trainer, order, year_month):
+    """Busca linealmente en dl_va el sample (order, year_month). Devuelve (img, msk, meta)."""
+    for batch in trainer.dl_va:
+        img, msk = batch[0], batch[1]
+        meta = batch[2]
+        orders = meta["order"].cpu().numpy()
+        yms = meta["year_month"]
+        for i in range(len(orders)):
+            if int(orders[i]) == int(order) and str(yms[i]) == str(year_month):
+                return img[i], msk[i], {"order": int(orders[i]), "year_month": str(yms[i])}
+    raise ValueError(f"No encontré (order={order}, year_month={year_month}) en val.")
+
+
+@torch.no_grad()
+def plot_compare_one(order, year_month, *, trainerA, trainerB, thr=0.7,
+                     label_A="Model A", label_B="Model B"):
+    """Compara las predicciones de dos modelos sobre un tile específico (4 paneles)."""
+    img, msk, meta = find_sample_in_val(trainerA, order, year_month)
+    device = trainerA.device
+    use_amp = (trainerA.device_type == "cuda")
+
+    img_b = img.unsqueeze(0).to(device)
+
+    trainerA.model.eval(); trainerB.model.eval()
+
+    with torch.amp.autocast(device_type=trainerA.device_type, enabled=use_amp):
+        logA = trainerA.model(img_b)
+        logB = trainerB.model(img_b)
+
+    probA = torch.sigmoid(logA)[0, 0].detach().cpu().numpy()
+    probB = torch.sigmoid(logB)[0, 0].detach().cpu().numpy()
+    gt    = (msk[0].detach().cpu().numpy() >= 0.5).astype(np.uint8)
+
+    predA = (probA >= thr).astype(np.uint8)
+    predB = (probB >= thr).astype(np.uint8)
+
+    rgb = make_rgb_like(img)
+
+    fig, ax = plt.subplots(1, 4, figsize=(16, 4))
+    ax[0].imshow(rgb); ax[0].set_title(f"Tile RGB\norder={meta['order']} Date: {meta['year_month']}"); ax[0].axis("off")
+    ax[1].imshow(rgb); ax[1].imshow(gt, alpha=0.3); ax[1].set_title("GT (overlay)"); ax[1].axis("off")
+    ax[2].imshow(rgb); ax[2].imshow(predA, alpha=0.3); ax[2].set_title(f"{label_A} pred (thr={thr})"); ax[2].axis("off")
+    ax[3].imshow(rgb); ax[3].imshow(predB, alpha=0.3); ax[3].set_title(f"{label_B} pred (thr={thr})"); ax[3].axis("off")
+    plt.tight_layout()
+    plt.show()
+
+
+def quick_delta_summary(df):
+    """Devuelve DataFrame de estadísticas (mean/median/p10/p90) de d_iou, d_f1, d_fp, d_fn."""
+    out = {}
+    for col in ["d_iou", "d_f1", "d_fp", "d_fn"]:
+        out[col] = {
+            "mean": float(df[col].mean()),
+            "median": float(df[col].median()),
+            "p10": float(df[col].quantile(0.10)),
+            "p90": float(df[col].quantile(0.90)),
+        }
+    return pd.DataFrame(out).T

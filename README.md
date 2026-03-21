@@ -59,16 +59,29 @@ data/
 
 ### Notebooks (recommended)
 
-Run the notebooks in order from `notebooks/`:
+Notebooks are numbered in the order their data was prepared. Two independent flows must be completed before fine-tuning:
+
+**Flow A — Building pretraining**
+
+| Notebook | Description |
+|----------|-------------|
+| `00_build_pretrain_dataset.ipynb` | Build the building segmentation pretraining dataset |
+| `03_building_detection.ipynb` | Train U-Net on building segmentation |
+
+**Flow B — Construction site preparation**
 
 | Notebook | Description |
 |----------|-------------|
 | `01_explore_points.ipynb` | Load construction sites, query mosaics, download quads |
 | `02_image_cropping.ipynb` | Crop macro patches, rasterize masks, create train/val/test splits |
-| `03_building_detection.ipynb` | Pretrain U-Net on buildings |
-| `04_finetuning.ipynb` | Fine-tune on construction sites |
 
-> **Note:** Notebook 2 requires manually drawn polygon labels stored as `mask_{order}.gpkg` (one per construction site) in the corresponding image folder before running the mask rasterization step.
+> **Note:** Notebook 02 requires manually drawn polygon labels stored as `mask_{order}.gpkg` (one per construction site) in the corresponding image folder before running the mask rasterization step.
+
+**Fine-tuning (depends on both flows)**
+
+| Notebook | Description |
+|----------|-------------|
+| `04_finetuning.ipynb` | Fine-tune the pretrained encoder (Flow A) on construction site data (Flow B) |
 
 ### Scripts (command line)
 
