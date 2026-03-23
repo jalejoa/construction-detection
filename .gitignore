@@ -51,3 +51,6 @@ data/processed/cropped_images/flagged_macro.csv
 # OS / Editor files
 .DS_Store
 Thumbs.db
+
+# Claude Code
+CLAUDE.md

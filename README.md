@@ -11,6 +11,42 @@ The pipeline follows four stages:
 3. **Pretraining** — Train a U-Net on a building segmentation dataset (not included) to learn general building footprint features.
 4. **Fine-tuning** — Transfer the pretrained encoder to construction site detection via a 2-phase frozen/unfrozen training strategy.
 
+## Requirements
+
+- Python 3.9+
+- A CUDA-capable GPU is recommended for training (CPU works but is very slow)
+- A Planet account with access to the Basemaps API
+
+## Input data
+
+Two datasets must be provided before running the pipeline. These are not included in the repository due to size, but are delivered separately.
+
+### 1. Construction sites shapefile
+
+A point shapefile in **WGS84 (EPSG:4326)** with one point per construction site and the following required fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `order` | integer | Unique site identifier |
+| `Start` | date | Month when construction activity begins |
+| `End` | date | Month when construction activity ends (can be empty if `Ongoing` is True) |
+| `Ongoing` | boolean | If True, the pipeline treats the site as still active: `End` is automatically set to the last day of the current month at the time of execution, so the site will be expanded across all months from `Start` up to today |
+
+Place it at:
+```
+data/raw/Construction_sites_WGS84.shp
+```
+
+### 2. Manual segmentation masks (GeoPackages)
+
+Each construction site requires a hand-digitized polygon layer stored as a GeoPackage with a `label_date` field (`YYYY_MM`) indicating which month(s) the polygon applies to. One file per site, placed at:
+
+```
+data/processed/cropped_images/macro/<order>/mask/mask_<order>.gpkg
+```
+
+These files must be digitized manually (e.g. in QGIS) by visually inspecting the downloaded satellite imagery. The mask rasterization step in notebook `02_image_cropping.ipynb` reads these files and produces pixel-aligned mask TIFFs automatically.
+
 ## Setup
 
 ### 1. Install dependencies
@@ -42,8 +78,13 @@ data/
 │   ├── gpkg/
 │   ├── cropped_images/
 │   │   └── macro/
-│   │       ├── images/          # cs_{order}_{YYYY_MM}.tif
-│   │       └── labels/          # mask_{order}_{YYYY_MM}.tif
+│   │       ├── <order>/
+│   │       │   ├── cs_<order>_<YYYY_MM>.tif   # Cropped image patches
+│   │       │   └── mask/
+│   │       │       └── mask_<order>.gpkg       # Hand-digitized masks (input)
+│   │       └── labels/
+│   │           └── <order>/
+│   │               └── mask_<order>_<YYYY_MM>.tif  # Rasterized masks (generated)
 │   ├── macro_catalog_filtered.csv
 │   ├── site_splits.csv
 │   └── norm/
